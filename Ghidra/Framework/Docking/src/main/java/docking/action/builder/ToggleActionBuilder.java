@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 package docking.action.builder;
+
 import docking.ActionContext;
 import docking.action.ToggleDockingAction;
 
@@ -21,7 +22,7 @@ import docking.action.ToggleDockingAction;
  * Builder for {@link ToggleDockingAction}s
  */
 public class ToggleActionBuilder extends
-		AbstractActionBuilder<ToggleDockingAction, ToggleActionBuilder> {
+		AbstractActionBuilder<ToggleDockingAction, ActionContext, ToggleActionBuilder> {
 
 	/**
 	 * The initial toggle state for the action
@@ -69,4 +70,3 @@ public class ToggleActionBuilder extends
 	}
 
 }
-

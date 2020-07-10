@@ -94,12 +94,6 @@ PrintLanguage *PrintCCapability::buildLanguage(Architecture *glb)
 PrintC::PrintC(Architecture *g,const string &nm) : PrintLanguage(g,nm)
 
 {
-  option_NULL = false;
-  option_inplace_ops = false;
-  option_convention = true;
-  option_nocasts = false;
-  option_unplaced = false;
-  option_hide_exts = true;
   nullToken = "NULL";
   
   // Set the flip tokens
@@ -111,7 +105,7 @@ PrintC::PrintC(Architecture *g,const string &nm) : PrintLanguage(g,nm)
   not_equal.negate = &equal;
 
   castStrategy = new CastStrategyC();
-  setCStyleComments();
+  resetDefaultsPrintC();
 }
 
 /// Push nested components of a data-type declaration onto a stack, so we can access it bottom up
@@ -591,11 +585,11 @@ void PrintC::opReturn(const PcodeOp *op)
   pushAtom(Atom("",blanktoken,EmitXml::no_color));
 }
 
-void PrintC::opIntZext(const PcodeOp *op)
+void PrintC::opIntZext(const PcodeOp *op,const PcodeOp *readOp)
 
 {
   if (castStrategy->isZextCast(op->getOut()->getHigh()->getType(),op->getIn(0)->getHigh()->getType())) {
-    if (isExtensionCastImplied(op))
+    if (option_hide_exts && castStrategy->isExtensionCastImplied(op,readOp))
       opHiddenFunc(op);
     else
       opTypeCast(op);
@@ -604,11 +598,11 @@ void PrintC::opIntZext(const PcodeOp *op)
     opFunc(op);
 }
 
-void PrintC::opIntSext(const PcodeOp *op)
+void PrintC::opIntSext(const PcodeOp *op,const PcodeOp *readOp)
 
 {
   if (castStrategy->isSextCast(op->getOut()->getHigh()->getType(),op->getIn(0)->getHigh()->getType())) {
-    if (isExtensionCastImplied(op))
+    if (option_hide_exts && castStrategy->isExtensionCastImplied(op,readOp))
       opHiddenFunc(op);
     else
       opTypeCast(op);
@@ -651,6 +645,13 @@ void PrintC::opPtradd(const PcodeOp *op)
 {
   bool printval = isSet(print_load_value|print_store_value);
   uint4 m = mods & ~(print_load_value|print_store_value);
+  if (!printval) {
+    TypePointer *tp = (TypePointer *)op->getIn(0)->getHigh()->getType();
+    if (tp->getMetatype() == TYPE_PTR) {
+      if (tp->getPtrTo()->getMetatype() == TYPE_ARRAY)
+	printval = true;
+    }
+  }
   if (printval)			// Use array notation if we need value
     pushOp(&subscript,op);
   else				// just a '+'
@@ -770,16 +771,11 @@ void PrintC::opPtrsub(const PcodeOp *op)
     }
   }
   else if (ct->getMetatype() == TYPE_SPACEBASE) {
-    TypeSpacebase *sb = (TypeSpacebase *)ct;
-    Scope *scope = sb->getMap();
-    Address addr = sb->getAddress(op->getIn(1)->getOffset(),in0->getSize(),op->getAddr());
-    if (addr.isInvalid())
-      throw LowlevelError("Unable to generate proper address from spacebase");
-    SymbolEntry *entry = scope->queryContainer(addr,1,Address());
-    Datatype *ct = (Datatype *)0;
+    HighVariable *high = op->getIn(1)->getHigh();
+    Symbol *symbol = high->getSymbol();
     arrayvalue = false;
-    if (entry != (SymbolEntry *)0) {
-      ct = entry->getSymbol()->getType();
+    if (symbol != (Symbol *)0) {
+      ct = symbol->getType();
 	   // The '&' is dropped if the output type is an array
       if (ct->getMetatype()==TYPE_ARRAY) {
 	arrayvalue = valueon;	// If printing value, use [0]
@@ -795,18 +791,21 @@ void PrintC::opPtrsub(const PcodeOp *op)
       if (arrayvalue)
 	pushOp(&subscript,op);
     }
-    if (entry == (SymbolEntry *)0)
+    if (symbol == (Symbol *)0) {
+      TypeSpacebase *sb = (TypeSpacebase *)ct;
+      Address addr = sb->getAddress(op->getIn(1)->getOffset(),in0->getSize(),op->getAddr());
       pushUnnamedLocation(addr,(Varnode *)0,op);
+    }
     else {
-      int4 off = (int4)(addr.getOffset() - entry->getAddr().getOffset()) + entry->getOffset();
+      int4 off = high->getSymbolOffset();
       if (off == 0)
-	pushSymbol(entry->getSymbol(),(Varnode *)0,op);
+	pushSymbol(symbol,(Varnode *)0,op);
       else {
 	// If this "value" is getting used as a storage location
 	// we can't use a cast in its description, so turn off
 	// casting when printing the partial symbol
 	//	Datatype *exttype = ((mods & print_store_value)!=0) ? (Datatype *)0 : ct;
-	pushPartialSymbol(entry->getSymbol(),off,0,(Varnode *)0,op,(Datatype *)0);
+	pushPartialSymbol(symbol,off,0,(Varnode *)0,op,(Datatype *)0);
       }
     }
     if (arrayvalue)
@@ -1172,7 +1171,7 @@ void PrintC::printUnicode(ostream &s,int4 onechar) const
       s << "\\x" << setfill('0') << setw(8) << hex << onechar;
     return;
   }
-  writeUtf8(s, onechar);		// emit normally
+  StringManager::writeUtf8(s, onechar);		// emit normally
 }
 
 void PrintC::pushType(const Datatype *ct)
@@ -1212,32 +1211,6 @@ bool PrintC::doEmitWideCharPrefix(void) const
   return true;
 }
 
-/// \brief Check if the byte buffer has a (unicode) string terminator
-///
-/// \param buffer is the byte buffer
-/// \param size is the number of bytes in the buffer
-/// \param charsize is the presumed size (in bytes) of character elements
-/// \return \b true if a string terminator is found
-bool PrintC::hasCharTerminator(uint1 *buffer,int4 size,int4 charsize)
-
-{
-  for(int4 i=0;i<size;i+=charsize) {
-    bool isTerminator = true;
-    for(int4 j=0;j<charsize;++j) {
-      if (buffer[i+j] != 0) {	// Non-zero bytes means character can't be a null terminator
-	isTerminator = false;
-	break;
-      }
-    }
-    if (isTerminator) return true;
-  }
-  return false;
-}
-
-#define STR_LITERAL_BUFFER_MAXSIZE 2048
-#define STR_LITERAL_BUFFER_INCREMENT 32
-
-
 /// \brief Print a quoted (unicode) string at the given address.
 ///
 /// Data for the string is obtained directly from the LoadImage.  The bytes are checked
@@ -1245,97 +1218,40 @@ bool PrintC::hasCharTerminator(uint1 *buffer,int4 size,int4 charsize)
 /// pass, the string is emitted.
 /// \param s is the output stream to print to
 /// \param addr is the address of the string data within the LoadImage
-/// \param charsize is the number of bytes in an encoded element (i.e. UTF8, UTF16, or UTF32)
+/// \param charType is the underlying character data-type
 /// \return \b true if a proper string was found and printed to the stream
-bool PrintC::printCharacterConstant(ostream &s,const Address &addr,int4 charsize) const
+bool PrintC::printCharacterConstant(ostream &s,const Address &addr,Datatype *charType) const
 
 {
-  uint1 buffer[STR_LITERAL_BUFFER_MAXSIZE+4]; // Additional buffer for get_codepoint skip readahead
-  int4 curBufferSize = 0;
-  bool foundTerminator = false;
-  try {
-    do {
-      uint4 newBufferSize = curBufferSize + STR_LITERAL_BUFFER_INCREMENT;
-      glb->loader->loadFill(buffer+curBufferSize,STR_LITERAL_BUFFER_INCREMENT,addr + curBufferSize);
-      foundTerminator = hasCharTerminator(buffer+curBufferSize,STR_LITERAL_BUFFER_INCREMENT,charsize);
-      curBufferSize = newBufferSize;
-    } while ((curBufferSize < STR_LITERAL_BUFFER_MAXSIZE)&&(!foundTerminator));
-  } catch(DataUnavailError &err) {
+  StringManager *manager = glb->stringManager;
+
+  // Retrieve UTF8 version of string
+  bool isTrunc = false;
+  const vector<uint1> &buffer(manager->getStringData(addr, charType, isTrunc));
+  if (buffer.empty())
     return false;
-  }
-  buffer[curBufferSize] = 0;		// Make sure bytes for final codepoint read are initialized
-  buffer[curBufferSize+1] = 0;
-  buffer[curBufferSize+2] = 0;
-  buffer[curBufferSize+3] = 0;
-  bool bigend = glb->translate->isBigEndian();
-  bool res;
-  if (isCharacterConstant(buffer,curBufferSize,charsize)) {
-    if (doEmitWideCharPrefix() && charsize > 1)
-      s << 'L';			// Print symbol indicating wide character
-    s << '"';
-    if (!escapeCharacterData(s,buffer,curBufferSize,charsize,bigend))
-      s << "...\" /* TRUNCATED STRING LITERAL */";
-    else s << '"';
-     
-    res = true;
-  }
+  if (doEmitWideCharPrefix() && charType->getSize() > 1 && !charType->isOpaqueString())
+    s << 'L';			// Print symbol indicating wide character
+  s << '"';
+  escapeCharacterData(s,buffer.data(),buffer.size(),1,glb->translate->isBigEndian());
+  if (isTrunc)
+    s << "...\" /* TRUNCATED STRING LITERAL */";
   else
-    res = false;
-  return res;
+    s << '"';
+
+  return true;
 }
 
-/// \brief Is the given ZEXT/SEXT cast implied by the expression its in
-///
-/// We know that the given ZEXT or SEXT op can be viewed as a natural \e cast operation.
-/// Sometimes such a cast is implied by the expression its in, and the cast itself
-/// doesn't need to be printed.
-/// \param op is the given ZEXT or SEXT PcodeOp
-/// \return \b true if the op as a cast does not need to be printed
-bool PrintC::isExtensionCastImplied(const PcodeOp *op) const
+void PrintC::resetDefaultsPrintC(void)
 
 {
-  if (!option_hide_exts)
-    return false;		// If hiding extensions is not on, we must always print extension
-  const Varnode *outVn = op->getOut();
-  if (outVn->isExplicit()) {
-
-  }
-  else {
-    type_metatype metatype = outVn->getHigh()->getType()->getMetatype();
-    list<PcodeOp *>::const_iterator iter;
-    for(iter=outVn->beginDescend();iter!=outVn->endDescend();++iter) {
-      PcodeOp *expOp = *iter;
-      Varnode *otherVn;
-      int4 slot;
-      switch(expOp->code()) {
-	case CPUI_PTRADD:
-	  break;
-	case CPUI_INT_ADD:
-	case CPUI_INT_SUB:
-	case CPUI_INT_MULT:
-	case CPUI_INT_DIV:
-	case CPUI_INT_AND:
-	case CPUI_INT_OR:
-	case CPUI_INT_XOR:
-	case CPUI_INT_LESS:
-	case CPUI_INT_LESSEQUAL:
-	case CPUI_INT_SLESS:
-	case CPUI_INT_SLESSEQUAL:
-	  slot = expOp->getSlot(outVn);
-	  otherVn = expOp->getIn(1-slot);
-	  // Check if the expression involves an explicit variable of the right integer type
-	  if (!otherVn->isExplicit())
-	    return false;
-	  if (otherVn->getHigh()->getType()->getMetatype() != metatype)
-	    return false;
-	  break;
-	default:
-	  return false;
-      }
-    }
-    return true;	// Everything is integer promotion
-  }
-  return false;
+  option_convention = true;
+  option_hide_exts = true;
+  option_inplace_ops = false;
+  option_nocasts = false;
+  option_NULL = false;
+  option_unplaced = false;
+  setCStyleComments();
 }
 
 /// \brief Push a single character constant to the RPN stack
@@ -1414,7 +1330,7 @@ bool PrintC::pushPtrCharConstant(uintb val,const TypePointer *ct,const Varnode *
 
 {
   if (val==0) return false;
-  AddrSpace *spc = glb->getDefaultSpace();
+  AddrSpace *spc = glb->getDefaultDataSpace();
   uintb fullEncoding;
   Address stringaddr = glb->resolveConstant(spc,val,ct->getSize(),op->getAddr(),fullEncoding);
   if (stringaddr.isInvalid()) return false;
@@ -1423,7 +1339,7 @@ bool PrintC::pushPtrCharConstant(uintb val,const TypePointer *ct,const Varnode *
 
   ostringstream str;
   Datatype *subct = ct->getPtrTo();
-  if (!printCharacterConstant(str,stringaddr,subct->getSize()))
+  if (!printCharacterConstant(str,stringaddr,subct))
     return false;		// Can we get a nice ASCII string
 
   pushAtom(Atom(str.str(),vartoken,EmitXml::const_color,op,vn));
@@ -1443,7 +1359,7 @@ bool PrintC::pushPtrCodeConstant(uintb val,const TypePointer *ct,
 				    const Varnode *vn,
 				    const PcodeOp *op)
 {
-  AddrSpace *spc = glb->getDefaultSpace();
+  AddrSpace *spc = glb->getDefaultCodeSpace();
   Funcdata *fd = (Funcdata *)0;
   val = AddrSpace::addressToByte(val,spc->getWordSize());
   fd = glb->symboltab->getGlobalScope()->queryFunction( Address(spc,val));
@@ -1627,7 +1543,7 @@ void PrintC::pushSymbol(const Symbol *sym,const Varnode *vn,const PcodeOp *op)
       SymbolEntry *entry = sym->getFirstWholeMap();
       if (entry != (SymbolEntry *)0) {
 	ostringstream s;
-	if (printCharacterConstant(s,entry->getAddr(),subct->getSize())) {
+	if (printCharacterConstant(s,entry->getAddr(),subct)) {
 	  pushAtom(Atom(s.str(),vartoken,EmitXml::const_color,op,vn));
 	  return;
 	}
@@ -1641,6 +1557,21 @@ void PrintC::pushSymbol(const Symbol *sym,const Varnode *vn,const PcodeOp *op)
   else
     tokenColor = EmitXml::var_color;
   // FIXME: resolve scopes
+  if (sym->hasMergeProblems() && vn != (Varnode *)0) {
+    HighVariable *high = vn->getHigh();
+    if (high->isUnmerged()) {
+      ostringstream s;
+      s << sym->getName();
+      SymbolEntry *entry = high->getSymbolEntry();
+      if (entry != (SymbolEntry *)0) {
+	s << '$' << dec << entry->getSymbol()->getMapEntryPosition(entry);
+      }
+      else
+	s << "$$";
+      pushAtom(Atom(s.str(),vartoken,tokenColor,op,vn));
+      return;
+    }
+  }
   pushAtom(Atom(sym->getName(),vartoken,tokenColor,op,vn));
 }
 
@@ -1851,8 +1782,11 @@ void PrintC::emitPrototypeOutput(const FuncProto *proto,
   PcodeOp *op;
   Varnode *vn;
 
-  if (fd != (const Funcdata *)0)
-    op = fd->canonicalReturnOp();
+  if (fd != (const Funcdata *)0) {
+    op = fd->getFirstReturnOp();
+    if (op != (PcodeOp *)0 && op->numInput() < 2)
+      op = (PcodeOp *)0;
+  }
   else
     op = (PcodeOp *)0;
 
@@ -1969,6 +1903,13 @@ void PrintC::emitGotoStatement(const FlowBlock *bl,const FlowBlock *exp_bl,
   emit->endStatement(id);
 }
 
+void PrintC::resetDefaults(void)
+
+{
+  PrintLanguage::resetDefaults();
+  resetDefaultsPrintC();
+}
+
 void PrintC::adjustTypeOperators(void)
 
 {
@@ -1986,25 +1927,6 @@ void PrintC::setCommentStyle(const string &nm)
     setCPlusPlusStyleComments();
   else
     throw LowlevelError("Unknown comment style. Use \"c\" or \"cplusplus\"");
-}
-
-bool PrintC::isCharacterConstant(const uint1 *buf,int4 size,int4 charsize) const
-
-{
-  // Return true if this looks like a c-string
-  // If the string is encoded in UTF8 or ASCII, we get (on average) a bit of check
-  // per character.  For UTF16, the surrogate reserved area gives at least some check.
-  if (buf == (const uint1 *)0) return false;
-  bool bigend = glb->translate->isBigEndian();
-  int4 i=0;
-  int4 skip = charsize;
-  while(i<size) {
-    int4 codepoint = getCodepoint(buf+i,charsize,bigend,skip);
-    if (codepoint < 0) return false;
-    if (codepoint == 0) break;
-    i += skip;
-  }
-  return true;
 }
 
 /// \brief Emit the definition of the given data-type
@@ -2137,7 +2059,7 @@ void PrintC::emitExpression(const PcodeOp *op)
     // If BRANCHIND, print switch( )
     // If CALL, CALLIND, CALLOTHER  print  call
     // If RETURN,   print return ( )
-  op->push(this);
+  op->getOpcode()->push(this,op,(PcodeOp *)0);
   recurse();
 }
 
@@ -2182,21 +2104,27 @@ bool PrintC::emitScopeVarDecls(const Scope *scope,int4 cat)
   MapIterator iter = scope->begin();
   MapIterator enditer = scope->end();
   for(;iter!=enditer;++iter) {
-    if ((*iter)->isPiece()) continue; // Don't do a partial entry
-    Symbol *sym = (*iter)->getSymbol();
+    const SymbolEntry *entry = *iter;
+    if (entry->isPiece()) continue; // Don't do a partial entry
+    Symbol *sym = entry->getSymbol();
     if (sym->getCategory() != cat) continue;
     if (sym->getName().size() == 0) continue;
     if (dynamic_cast<FunctionSymbol *>(sym) != (FunctionSymbol *)0)
       continue;
     if (dynamic_cast<LabSymbol *>(sym) != (LabSymbol *)0)
       continue;
+    if (sym->isMultiEntry()) {
+      if (sym->getFirstWholeMap() != entry)
+	continue;		// Only emit the first SymbolEntry for declaration of multi-entry Symbol
+    }
     notempty = true;
     emitVarDeclStatement(sym);
   }
   list<SymbolEntry>::const_iterator iter_d = scope->beginDynamic();
   list<SymbolEntry>::const_iterator enditer_d = scope->endDynamic();
   for(;iter_d!=enditer_d;++iter_d) {
-    if ((*iter_d).isPiece()) continue; // Don't do a partial entry
+    const SymbolEntry *entry = &(*iter_d);
+    if (entry->isPiece()) continue; // Don't do a partial entry
     Symbol *sym = (*iter_d).getSymbol();
     if (sym->getCategory() != cat) continue;
     if (sym->getName().size() == 0) continue;
@@ -2204,6 +2132,10 @@ bool PrintC::emitScopeVarDecls(const Scope *scope,int4 cat)
       continue;
     if (dynamic_cast<LabSymbol *>(sym) != (LabSymbol *)0)
       continue;
+    if (sym->isMultiEntry()) {
+      if (sym->getFirstWholeMap() != entry)
+	continue;
+    }
     notempty = true;
     emitVarDeclStatement(sym);
   }

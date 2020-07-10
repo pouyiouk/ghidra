@@ -93,8 +93,10 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 	 * 18-Jul-2018 - version 20 - added support for external locations storing both
 	 *                            address and original-imported-name packed into symbol data3.
 	 *                            Read of old symbol data3 format does not require upgrade.
+	 * 14-May-2020 - version 21 - added support for overlay mapped blocks and byte mapping
+	 *                            schemes other than the default 1:1
 	 */
-	static final int DB_VERSION = 20;
+	static final int DB_VERSION = 21;
 
 	/**
 	 * UPGRADE_REQUIRED_BFORE_VERSION should be changed to DB_VERSION anytime the
@@ -282,7 +284,7 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 		if (monitor == null) {
 			monitor = TaskMonitorAdapter.DUMMY;
 		}
-		
+
 		boolean success = false;
 		try {
 			int id = startTransaction("create program");
@@ -2141,8 +2143,9 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 	 * Translate language
 	 * @param translator language translator, if null only re-disassembly will occur.
 	 * @param newCompilerSpecID new compiler specification which corresponds to new language, may be null.
-	 * @param monitor
-	 * @throws LockException 
+	 * @param forceRedisassembly if true a redisassembly will be forced even if not required
+	 * @param monitor task monitor
+	 * @throws LockException if exclusive access is missing 
 	 */
 	public void setLanguage(LanguageTranslator translator, CompilerSpecID newCompilerSpecID,
 			boolean forceRedisassembly, TaskMonitor monitor) throws LockException {
@@ -2153,7 +2156,7 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 		try {
 			setEventsEnabled(false);
 			try {
-				boolean notifyCodeManager = true;
+				boolean redisassemblyRequired = true;
 				int oldLanguageVersion = languageVersion;
 				int oldLanguageMinorVersion = languageMinorVersion;
 				if (translator != null) {
@@ -2168,7 +2171,7 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 				}
 				else if (!forceRedisassembly && language.getVersion() == languageVersion &&
 					language.getMinorVersion() == languageMinorVersion) {
-					notifyCodeManager = false; // compiler spec change only
+					redisassemblyRequired = false; // compiler spec change only
 					Msg.info(this, "Setting compiler spec for Program " + getName() + ": " +
 						compilerSpecID + " -> " + newCompilerSpecID);
 				}
@@ -2207,15 +2210,14 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 				monitor.setProgress(0);
 				ProgramRegisterContextDB contextMgr =
 					(ProgramRegisterContextDB) getProgramContext();
-				if (translator != null) {
+				if (redisassemblyRequired) {
 					contextMgr.setLanguage(translator, compilerSpec, memoryManager, monitor);
 				}
 				else {
-					// force re-initialization
 					contextMgr.initializeDefaultValues(language, compilerSpec);
 				}
 
-				if (notifyCodeManager) {
+				if (redisassemblyRequired) {
 					Disassembler.clearUnimplementedPcodeWarnings(this, null, monitor);
 					repairContext(oldLanguageVersion, oldLanguageMinorVersion, translator, monitor);
 					monitor.setMessage("Updating instructions...");

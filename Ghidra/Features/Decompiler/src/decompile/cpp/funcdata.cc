@@ -36,6 +36,7 @@ Funcdata::Funcdata(const string &nm,Scope *scope,const Address &addr,int4 sz)
   high_level_index = 0;
   cast_phase_index = 0;
   glb = scope->getArch();
+  minLanedSize = glb->getMinimumLanedRegisterSize();
   name = nm;
 
   size = sz;
@@ -69,6 +70,7 @@ void Funcdata::clear(void)
   clean_up_index = 0;
   high_level_index = 0;
   cast_phase_index = 0;
+  minLanedSize = glb->getMinimumLanedRegisterSize();
 
   localmap->clearUnlocked();	// Clear non-permanent stuff
   localmap->resetLocalWindow();
@@ -134,7 +136,7 @@ void Funcdata::startProcessing(void)
     warningHeader("This is an inlined function");
   Address baddr(baseaddr.getSpace(),0);
   Address eaddr(baseaddr.getSpace(),~((uintb)0));
-  followFlow(baddr,eaddr,0);
+  followFlow(baddr,eaddr);
   structureReset();
   sortCallSpecs();		// Must come after structure reset
   heritage.buildInfoList();
@@ -343,7 +345,7 @@ void Funcdata::spacebaseConstant(PcodeOp *op,int4 slot,SymbolEntry *entry,const 
 
   Symbol *sym = entry->getSymbol();
   Datatype *entrytype = sym->getType();
-  Datatype *ptrentrytype = glb->types->getTypePointer(sz,entrytype,spaceid->getWordSize());
+  Datatype *ptrentrytype = glb->types->getTypePointerStripArray(sz,entrytype,spaceid->getWordSize());
   bool typelock = sym->isTypeLocked();
   if (typelock && (entrytype->getMetatype() == TYPE_UNKNOWN))
     typelock = false;
@@ -405,7 +407,7 @@ void Funcdata::clearCallSpecs(void)
 
 FuncCallSpecs *Funcdata::getCallSpecs(const PcodeOp *op) const
 
-{				// Get FuncCallSpecs from CALL op
+{
   int4 i;
   const Varnode *vn;
 
@@ -607,7 +609,6 @@ void Funcdata::saveVarnodeXml(ostream &s,VarnodeLocSet::const_iterator iter,Varn
 void Funcdata::saveXmlHigh(ostream &s) const
 
 {
-  int4 j;
   Varnode *vn;
   HighVariable *high;
 
@@ -620,32 +621,7 @@ void Funcdata::saveXmlHigh(ostream &s) const
     high = vn->getHigh();
     if (high->isMark()) continue;
     high->setMark();
-    vn = high->getNameRepresentative(); // Get representative varnode
-    s << "<high ";
-    //    a_v(s,"name",high->getName());
-    a_v_u(s,"repref",vn->getCreateIndex());
-    if (high->isSpacebase()||high->isImplied()) // This is a special variable
-      a_v(s,"class",string("other"));
-    else if (high->isPersist()&&high->isAddrTied()) // Global variable
-      a_v(s,"class",string("global"));
-    else if (high->isConstant())
-      a_v(s,"class",string("constant"));
-    else if (!high->isPersist())
-      a_v(s,"class",string("local"));
-    else
-      a_v(s,"class",string("other"));
-    if (high->isTypeLock())
-      a_v_b(s,"typelock",true);
-    if (high->getSymbol() != (Symbol *)0)
-      a_v_u(s,"symref",high->getSymbol()->getId());
-    s << '>';
-    high->getType()->saveXml(s);
-    for(j=0;j<high->numInstances();++j) {
-      s << "<addr ";
-      a_v_u(s,"ref",high->getInstance(j)->getCreateIndex());
-      s << "/>";
-    }
-    s << "</high>";
+    high->saveXml(s);
   }
   for(iter=beginLoc();iter!=endLoc();++iter) {
     vn = *iter;
@@ -708,11 +684,14 @@ void Funcdata::saveXmlTree(ostream &s) const
 /// If indicated by the caller, a description of the entire PcodeOp and Varnode
 /// tree is also emitted.
 /// \param s is the output stream
+/// \param id is the unique id associated with the function symbol
 /// \param savetree is \b true if the p-code tree should be emitted
-void Funcdata::saveXml(ostream &s,bool savetree) const
+void Funcdata::saveXml(ostream &s,uint8 id,bool savetree) const
 
 {
   s << "<function";
+  if (id != 0)
+    a_v_u(s, "id", id);
   a_v(s,"name",name);
   a_v_i(s,"size",size);
   if (hasNoCode())
@@ -738,22 +717,30 @@ void Funcdata::saveXml(ostream &s,bool savetree) const
 /// From an XML \<function> tag, recover the name, address, prototype, symbol,
 /// jump-table, and override information for \b this function.
 /// \param el is the root \<function> tag
-void Funcdata::restoreXml(const Element *el)
+/// \return the symbol id associated with the function
+uint8 Funcdata::restoreXml(const Element *el)
 
 {
   //  clear();  // Shouldn't be needed
   name.clear();
   size = -1;
+  uint8 id = 0;
   AddrSpace *stackid = glb->getStackSpace();
   for(int4 i=0;i<el->getNumAttributes();++i) {
-    if (el->getAttributeName(i) == "name")
+    const string &attrName(el->getAttributeName(i));
+    if (attrName == "name")
       name = el->getAttributeValue(i);
-    else if (el->getAttributeName(i) == "size") {
+    else if (attrName == "size") {
       istringstream s( el->getAttributeValue(i));
       s.unsetf(ios::dec | ios::hex | ios::oct);
       s >> size;
     }
-    else if (el->getAttributeName(i) == "nocode") {
+    else if (attrName == "id") {
+      istringstream s( el->getAttributeValue(i));
+      s.unsetf(ios::dec | ios::hex | ios::oct);
+      s >> id;
+    }
+    else if (attrName == "nocode") {
       if (xml_readbool(el->getAttributeValue(i)))
 	flags |= no_code;
     }
@@ -805,6 +792,7 @@ void Funcdata::restoreXml(const Element *el)
     funcp.setScope(localmap,baseaddr+ -1);
   }
   localmap->resetLocalWindow();
+  return id;
 }
 
 /// \brief Inject p-code from a \e payload into \b this live function

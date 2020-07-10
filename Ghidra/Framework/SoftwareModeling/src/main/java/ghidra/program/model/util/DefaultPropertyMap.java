@@ -35,7 +35,7 @@ import ghidra.util.prop.PropertyVisitor;
  *   For any long the property
  *   manager can be used to tell if the property exists there and
  *   what its value is. It also maintains information that allows it
- *   to efficiently search for the next and previous occurence of the
+ *   to efficiently search for the next and previous occurrence of the
  *   property relative to a given address.
  *   The subclass provides the createPage() method that dictates
   *  the type of PropertyPage that will be managed.
@@ -306,27 +306,9 @@ public abstract class DefaultPropertyMap implements PropertyMap {
 	 * @throws ClassNotFoundException if the class for the object being
 	 * read is not in the class path
 	 */
-	public void restoreProperties(ObjectInputStream ois) throws IOException, ClassNotFoundException {
+	public void restoreProperties(ObjectInputStream ois)
+			throws IOException, ClassNotFoundException {
 		propertyMgr.restoreProperties(ois);
-	}
-
-	/**
-	 * Write all properties in the map to the given output stream.
-	 * @throws IOException if there is a problem writing to the stream
-	 */
-	public void saveAll(ObjectOutputStream out) throws IOException {
-		propertyMgr.saveAll(out);
-	}
-
-	/**
-	 * Restore properties read from the given input stream.
-	 * @param in input stream 
-	 * @throws IOException if there is a problem reading from the stream
-	 * @throws ClassNotFoundException if the class for the object being
-	 * read is not in the class path
-	 */
-	public void restoreAll(ObjectInputStream in) throws IOException, ClassNotFoundException {
-		propertyMgr.restoreAll(in);
 	}
 
 	private class AddressPropertyIterator implements AddressIterator {
@@ -350,7 +332,8 @@ public abstract class DefaultPropertyMap implements PropertyMap {
 
 		AddressPropertyIterator(Address start, Address end, boolean forward) {
 			iter =
-				propertyMgr.getPropertyIterator(addrMap.getKey(start), addrMap.getKey(end), forward);
+				propertyMgr.getPropertyIterator(addrMap.getKey(start), addrMap.getKey(end),
+					forward);
 			this.forward = forward;
 
 		}

@@ -19,7 +19,6 @@ import java.io.IOException;
 import java.io.Writer;
 import java.util.*;
 
-import ghidra.app.plugin.core.datamgr.archive.SourceArchive;
 import ghidra.util.Msg;
 import ghidra.util.exception.CancelledException;
 import ghidra.util.task.TaskMonitor;
@@ -240,7 +239,7 @@ public class DataTypeWriter {
 			if (throwExceptionOnInvalidType) {
 				throw iae;
 			}
-			Msg.error(this, "Factory data types may not be written - type: " + dt, iae);
+			Msg.error(this, "Factory data types may not be written - type: " + dt);
 		}
 		if (dt instanceof Pointer || dt instanceof Array || dt instanceof BitFieldDataType) {
 			write(getBaseDataType(dt), monitor);
@@ -352,7 +351,7 @@ public class DataTypeWriter {
 	}
 
 	private boolean containsComposite(Composite container, Composite contained) {
-		for (DataTypeComponent component : container.getComponents()) {
+		for (DataTypeComponent component : container.getDefinedComponents()) {
 			DataType dt = getBaseArrayTypedefType(component.getDataType());
 			if (dt instanceof Composite && dt.getName().equals(contained.getName()) &&
 				dt.isEquivalent(contained)) {

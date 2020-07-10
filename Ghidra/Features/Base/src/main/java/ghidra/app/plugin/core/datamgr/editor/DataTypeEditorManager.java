@@ -22,14 +22,13 @@ import javax.swing.ComboBoxModel;
 import javax.swing.JPanel;
 
 import docking.ComponentProvider;
+import docking.actions.DockingToolActions;
 import docking.actions.SharedDockingActionPlaceholder;
-import docking.actions.ToolActions;
 import docking.widgets.checkbox.GCheckBox;
 import docking.widgets.combobox.GhidraComboBox;
 import docking.widgets.label.GLabel;
 import ghidra.app.plugin.core.compositeeditor.*;
 import ghidra.app.plugin.core.datamgr.DataTypeManagerPlugin;
-import ghidra.app.plugin.core.datamgr.archive.SourceArchive;
 import ghidra.app.plugin.core.function.EditFunctionSignatureDialog;
 import ghidra.framework.model.DomainObject;
 import ghidra.framework.plugintool.PluginTool;
@@ -163,7 +162,7 @@ public class DataTypeEditorManager
 	}
 
 	private void registerAction(String name) {
-		ToolActions toolActions = plugin.getTool().getToolActions();
+		DockingToolActions toolActions = plugin.getTool().getToolActions();
 		toolActions.registerSharedActionPlaceholder(new DtSharedActionPlaceholder(name));
 	}
 
